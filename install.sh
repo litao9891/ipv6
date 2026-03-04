@@ -177,10 +177,77 @@ if check_proxy; then log "修复成功"; exit 0; else log "修复后仍不通"; 
 EOF
 chmod +x /usr/local/bin/v6-proxy-auto-repair.sh
 
-# 6. Xray 配置（需要 v2ray-agent 已安装）
-XRAY_CONF="/etc/v2ray-agent/xray/conf"
+# 6. Xray 安装与配置
+XRAY_DIR="/etc/v2ray-agent/xray"
+XRAY_CONF="$XRAY_DIR/conf"
+
+install_xray_if_missing() {
+    if [ -x "$XRAY_DIR/xray" ]; then
+        echo "[4/7] 已检测到 Xray，跳过安装..."
+        return 0
+    fi
+    echo "[4/7] 安装 Xray（自动下载）..."
+    mkdir -p "$XRAY_DIR" "$XRAY_CONF"
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64) XRAY_ARCH="64" ;;
+        aarch64|arm64) XRAY_ARCH="arm64-v8a" ;;
+        armv7l) XRAY_ARCH="arm32-v7a" ;;
+        *) echo "不支持的架构: $ARCH"; exit 1 ;;
+    esac
+    XRAY_VER=$(curl -s "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    [ -z "$XRAY_VER" ] && XRAY_VER="v1.8.12"
+    XRAY_ZIP="Xray-linux-${XRAY_ARCH}.zip"
+    XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/${XRAY_ZIP}"
+    (cd /tmp && (wget -q -O xray.zip "$XRAY_URL" || curl -sL -o xray.zip "$XRAY_URL") && unzip -o -q xray.zip && mv xray "$XRAY_DIR/" && for f in geoip.dat geosite.dat; do [ -f "$f" ] && mv "$f" "$XRAY_DIR/"; done && rm -f xray.zip) || {
+        echo "Xray 下载失败，请检查网络"
+        exit 1
+    }
+    chmod +x "$XRAY_DIR/xray"
+    for f in geoip.dat geosite.dat; do
+        [ -f "$XRAY_DIR/$f" ] || (curl -sL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/$f" -o "$XRAY_DIR/$f" 2>/dev/null || true)
+    done
+    # 基础配置
+    echo '{"log":{"loglevel":"warning"}}' > "$XRAY_CONF/00_log.json"
+    echo '{"policy":{"levels":{"0":{"handshake":3,"connIdle":261}}}}' > "$XRAY_CONF/12_policy.json"
+    # 启动前确保隧道就绪
+    cat > /etc/systemd/system/ipv6-tunnel-boot.service << 'BOOTSVC'
+[Unit]
+Description=HE IPv6 Tunnel Boot
+After=network-online.target
+Before=xray.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/bash -c 'for i in 1 2 3 4 5 6 7 8 9 10; do ip link show he-ipv6 &>/dev/null && break; sleep 2; done'
+ExecStart=/usr/local/bin/fix-he-ipv6-tunnel.sh
+RemainAfterExit=yes
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
+BOOTSVC
+
+    # systemd
+    cat > /etc/systemd/system/xray.service << 'XRAYSVC'
+[Unit]
+Description=Xray Service
+After=network.target ipv6-tunnel-boot.service
+[Service]
+User=root
+ExecStart=/etc/v2ray-agent/xray/xray run -confdir /etc/v2ray-agent/xray/conf
+Restart=on-failure
+LimitNPROC=infinity
+LimitNOFILE=infinity
+[Install]
+WantedBy=multi-user.target
+XRAYSVC
+}
+
+install_xray_if_missing
+
 if [ -d "$XRAY_CONF" ]; then
-    echo "[4/6] 配置 Xray..."
+    echo "[5/7] 配置 Xray..."
     mkdir -p "$XRAY_CONF"
     
     # v6_proxy outbound
@@ -224,18 +291,28 @@ ROUT
 INBOUND
 
     # DNS 优先 IPv6
-    if [ -f "$XRAY_CONF/11_dns.json" ]; then
-        if ! grep -q "v6_proxy_outbound" "$XRAY_CONF/11_dns.json" 2>/dev/null; then
-            echo "请确保 11_dns.json 中 v6_proxy 使用 IPv6 DNS"
-        fi
-    fi
-else
-    echo "[4/6] 未找到 v2ray-agent，请先安装: bash <(curl -Ls https://raw.githubusercontent.com/mack-a/v2ray-agent/master/install.sh)"
-    echo "      安装后再运行本脚本，或手动将 xray-conf/ 下配置复制到 Xray conf 目录"
+    cat > "$XRAY_CONF/11_dns.json" << 'DNS'
+{
+    "dns": {
+        "servers": [
+          {"address": "2001:4860:4860::8888", "domains": ["geosite:geolocation-!cn"], "expectIPs": ["geoip:!cn"]},
+          {"address": "2001:4860:4860::8844", "domains": ["geosite:geolocation-!cn"], "expectIPs": ["geoip:!cn"]},
+          "localhost"
+        ],
+        "queryStrategy": "UseIPv6",
+        "disableCache": false,
+        "rules": [{"type": "field", "outboundTag": ["v6_proxy_outbound"], "server": "2001:4860:4860::8888"}]
+    }
+}
+DNS
+
+    cat > "$XRAY_CONF/z_direct_outbound.json" << 'DIRECT'
+{"outbounds":[{"protocol":"freedom","settings":{"domainStrategy":"UseIPv6"},"tag":"z_direct_outbound"}]}
+DIRECT
 fi
 
 # 7. sysctl + 启用服务
-echo "[5/6] 系统配置..."
+echo "[6/7] 系统配置..."
 mkdir -p /etc/sysctl.d
 echo "net.ipv6.ip_nonlocal_bind = 1" > /etc/sysctl.d/99-ipv6-anyip.conf
 sysctl -p /etc/sysctl.d/99-ipv6-anyip.conf 2>/dev/null || true
@@ -276,12 +353,12 @@ WantedBy=timers.target
 TIM
 
 systemctl daemon-reload
-systemctl enable ipv6-anyip v6-proxy he-ipv6-tunnel-monitor.timer
+systemctl enable ipv6-anyip v6-proxy he-ipv6-tunnel-monitor.timer ipv6-tunnel-boot xray
 
 # Cron 每分钟检测修复
 (crontab -l 2>/dev/null | grep -v v6-proxy-auto-repair; echo '* * * * * /usr/local/bin/v6-proxy-auto-repair.sh >> /var/log/v6-proxy-repair.log 2>&1') | crontab -
 
-echo "[6/6] 应用网络并启动..."
+echo "[7/7] 应用网络并启动..."
 netplan apply 2>/dev/null || true
 systemctl start ipv6-anyip
 systemctl start v6-proxy

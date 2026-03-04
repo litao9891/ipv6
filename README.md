@@ -11,7 +11,7 @@
 
 ## 前提
 - 新 VPS 已申请 [TunnelBroker.net](https://tunnelbroker.net) 隧道
-- 新 VPS 已安装 v2ray-agent（Xray）
+- 无需预装 v2ray-agent，脚本会自动安装 Xray
 
 ## 部署到新 VPS
 
@@ -42,7 +42,7 @@ tar czvf v6-proxy-random-ipv6-deploy.tar.gz v6-proxy-random-ipv6-deploy/
 - Client IPv6 Address → 推导 TUNNEL_IPV6_PREFIX（如 2001:470:c:12e5::2/64 → 2001:470:c:12e5）
 - Routed /64 → 推导 ROUTED_PREFIX（如 2001:470:d:12e1::/64 → 2001:470:d:12e1）
 
-### 3. 运行安装
+### 3. 运行安装（一键完成，含 Xray 自动安装）
 
 ```bash
 cd v6-proxy-random-ipv6-deploy
