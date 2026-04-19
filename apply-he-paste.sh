@@ -129,4 +129,9 @@ echo "  ROUTED_64_CIDR=$ROUTED_64_CIDR"
 echo "  ROUTED_48_CIDR=$ROUTED_48_CIDR"
 echo "  PRIMARY_INTERFACE=$PRIMARY_INTERFACE"
 
-exec bash ./install.sh --config-only
+if [[ -x /usr/local/bin/v6-proxy ]] && [[ -x /etc/v2ray-agent/xray/xray ]]; then
+  exec bash ./install.sh --config-only
+fi
+
+echo "[apply-he-paste] 未检测到完整安装，将执行完整 install.sh（安装 v6-proxy / Xray 等）"
+exec bash ./install.sh
