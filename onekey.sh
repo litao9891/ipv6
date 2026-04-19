@@ -75,6 +75,9 @@ restart_all_services() {
   systemctl restart v6-proxy.service v6-proxy-48.service v6-proxy-64.service 2>/dev/null || true
   systemctl try-restart xray.service 2>/dev/null || systemctl restart xray.service 2>/dev/null || true
   systemctl start he-ipv6-tunnel-monitor.timer 2>/dev/null || true
+  if [[ -f "$SCRIPT_DIR/install.sh" ]]; then
+    bash "$SCRIPT_DIR/install.sh" --iptables-only 2>/dev/null || true
+  fi
   echo "[onekey] 已执行重启。状态:"
   systemctl is-active ipv6-anyip.service v6-proxy.service v6-proxy-48.service xray.service 2>/dev/null || true
 }
@@ -84,7 +87,7 @@ show_menu() {
 ======== 随机 IPv6 一键 ========
   1) 安装        拉最新脚本 + 完整安装（v6-proxy / Xray / systemd）
   2) 更新 IP     拉最新脚本 + 粘贴 HE 控制台整段（换隧道/换 IP）
-  3) 重启服务    netplan + 隧道修复 + ipv6-anyip + v6-proxy + xray
+  3) 重启服务    同上 + 自动补 iptables VMess 端口（见 install.sh --iptables-only）
   0) 退出
 ================================
 提示: 仅拉脚本并按本机 config 应用 → sudo bash onekey.sh update
@@ -159,7 +162,7 @@ help | -h | --help)
   sudo bash onekey.sh install      完整安装
   sudo bash onekey.sh ip [文件]   粘贴或从文件更新 HE / IP
   sudo bash onekey.sh update       拉脚本后仅按 config 应用
-  sudo bash onekey.sh restart      重启 netplan / 隧道 / 代理 / xray
+  sudo bash onekey.sh restart      重启 netplan / 隧道 / 代理 / xray + iptables 放行
 
 环境变量 V6_REPO_RAW 可指向 fork 的 raw 根路径。
 EOF

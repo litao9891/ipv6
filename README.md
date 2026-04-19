@@ -116,7 +116,7 @@ sudo bash install.sh --config-only
 ## VMess UUID 与客户端连不上
 
 - **`install.sh` / `install.sh --config-only`**：若 `config.sh` 里 **`VMESS_UUID` 为空** 或为仓库**占位 UUID**（`00000000-0000-4000-8000-000000000001`），会按顺序尝试 **`uuidgen`** → **`/proc/sys/kernel/random/uuid`（Linux）** → **`openssl`** → **`python3`** 生成随机 UUID，写回 `config.sh` 并同步到 Xray；**不强制依赖 Python**。  
-- **自检通过但外网客户端连不上**：多半是 **云安全组未放行入站 TCP `VMESS_PORT_64` / `VMESS_PORT_48`**（默认 48442、54661）。安装结束会再次提示。
+- **自检通过但外网客户端连不上**：除 **云安全组** 外，部分 VPS **本机 iptables** 在 INPUT 末尾 **REJECT** 未放行 VMess 端口，SYN 会被拦。`install.sh` / `install.sh --config-only` / 菜单 **3 重启** 会自动在 REJECT/DROP 前插入 **`ACCEPT tcp dpt:端口`**（若尚无），并尝试 **`netfilter-persistent save`** 或写入 **`/etc/iptables/rules.v4`**。仅补防火墙可执行：`sudo bash install.sh --iptables-only`。
 - **`vmess://` 整行必须一行复制**：终端换行会截断 Base64，导致 UUID 不完整、客户端超时；请从 **`vmess-links.txt`** 用编辑器复制，或放大终端宽度后再复制终端输出。
 
 ## 安全提示

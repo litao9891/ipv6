@@ -5,6 +5,56 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# 部分 VPS 默认 iptables INPUT 末尾 REJECT/DROP 未放行 VMess 端口（须放在最前，供 --iptables-only 使用）
+ensure_iptables_vmess_inbound() {
+  command -v iptables >/dev/null 2>&1 || {
+    echo "[install] 未找到 iptables，跳过 VMess 入站规则（若用 nftables 请自行放行）"
+    return 0
+  }
+  local p64="${VMESS_PORT_64:-48442}" p48="${VMESS_PORT_48:-54661}" port rej
+  for port in "$p64" "$p48"; do
+    if iptables -C INPUT -p tcp -m tcp --dport "$port" -j ACCEPT 2>/dev/null; then
+      echo "[install] iptables 已存在: ACCEPT tcp dport $port"
+      continue
+    fi
+    rej=$(iptables -L INPUT --line-numbers -n 2>/dev/null | awk 'NR>2 && ($4=="REJECT" || $4=="DROP") { r=$1 } END { print r+0 }')
+    if [[ -n "$rej" ]] && [[ "$rej" -ge 1 ]]; then
+      if iptables -I INPUT "$rej" -p tcp -m tcp --dport "$port" -j ACCEPT 2>/dev/null; then
+        echo "[install] 已在 INPUT 链 REJECT/DROP 前插入: ACCEPT tcp dport $port"
+      else
+        iptables -A INPUT -p tcp -m tcp --dport "$port" -j ACCEPT 2>/dev/null && echo "[install] 已追加: ACCEPT tcp dport $port"
+      fi
+    else
+      iptables -A INPUT -p tcp -m tcp --dport "$port" -j ACCEPT 2>/dev/null && echo "[install] 已追加: ACCEPT tcp dport $port"
+    fi
+  done
+  if command -v netfilter-persistent >/dev/null 2>&1; then
+    netfilter-persistent save 2>/dev/null && echo "[install] 已执行 netfilter-persistent save" || true
+  elif command -v iptables-save >/dev/null 2>&1; then
+    mkdir -p /etc/iptables
+    if iptables-save > /etc/iptables/rules.v4 2>/dev/null; then
+      echo "[install] 已写入 /etc/iptables/rules.v4（若已装 iptables-persistent 重启后仍有效）"
+    fi
+  fi
+}
+
+if [[ "${1:-}" == "--iptables-only" ]]; then
+  [[ "$(id -u)" -eq 0 ]] || {
+    echo "需要 root: sudo bash $0 --iptables-only"
+    exit 1
+  }
+  [[ -f config.sh ]] || {
+    echo "缺少 config.sh"
+    exit 1
+  }
+  # shellcheck disable=SC1091
+  source config.sh
+  : "${VMESS_PORT_64:=48442}"
+  : "${VMESS_PORT_48:=54661}"
+  ensure_iptables_vmess_inbound
+  exit 0
+fi
+
 CONFIG_ONLY=0
 [[ "${1:-}" == "--config-only" ]] && CONFIG_ONLY=1
 
@@ -516,6 +566,7 @@ restart_stack() {
   systemctl restart v6-proxy.service v6-proxy-48.service v6-proxy-64.service 2>/dev/null || true
   systemctl restart xray.service 2>/dev/null || true
   systemctl start he-ipv6-tunnel-monitor.timer 2>/dev/null || true
+  ensure_iptables_vmess_inbound
 }
 
 public_ip_for_vmess() {
@@ -529,7 +580,7 @@ public_ip_for_vmess() {
 print_inbound_client_hint() {
   echo ""
   echo "[install] 客户端入站：请在云安全组/防火墙放行 TCP ${VMESS_PORT_64}、${VMESS_PORT_48}（WebSocket，路径 ${VMESS_WS_PATH}，无 TLS）"
-  echo "[install] 若本机自检通过但外网连不上，多半是上述端口未对公网开放。"
+  echo "[install] 若本机自检通过但外网连不上：请查云安全组 + 本机 iptables（install 已尝试自动放行 VMess 端口）。"
   echo "[install] 本机监听（应对 0.0.0.0:端口 与 xray 进程）:"
   ss -tlnp 2>/dev/null | grep -E ":${VMESS_PORT_64}\b|:${VMESS_PORT_48}\b" || ss -tlnp | grep -E '48442|54661' || echo "  (未检测到监听，请检查 xray 是否启动)"
 }
@@ -692,6 +743,7 @@ systemctl start ipv6-anyip
 systemctl start v6-proxy v6-proxy-48 v6-proxy-64
 systemctl start he-ipv6-tunnel-monitor.timer
 systemctl restart xray 2>/dev/null || true
+ensure_iptables_vmess_inbound
 
 sleep 2
 run_self_tests
