@@ -117,6 +117,7 @@ sudo bash install.sh --config-only
 
 - **`install.sh` / `install.sh --config-only`**：若 `config.sh` 里 **`VMESS_UUID` 为空** 或为仓库**占位 UUID**（`00000000-0000-4000-8000-000000000001`），会按顺序尝试 **`uuidgen`** → **`/proc/sys/kernel/random/uuid`（Linux）** → **`openssl`** → **`python3`** 生成随机 UUID，写回 `config.sh` 并同步到 Xray；**不强制依赖 Python**。  
 - **自检通过但外网客户端连不上**：多半是 **云安全组未放行入站 TCP `VMESS_PORT_64` / `VMESS_PORT_48`**（默认 48442、54661）。安装结束会再次提示。
+- **`vmess://` 整行必须一行复制**：终端换行会截断 Base64，导致 UUID 不完整、客户端超时；请从 **`vmess-links.txt`** 用编辑器复制，或放大终端宽度后再复制终端输出。
 
 ## 安全提示
 

@@ -74,10 +74,11 @@ gen_random_uuid() {
 }
 
 ensure_vmess_uuid() {
-  if [[ -n "${VMESS_UUID:-}" ]] && [[ "$VMESS_UUID" != "$PLACEHOLDER_VMESS_UUID" ]]; then
+  VMESS_UUID="$(printf '%s' "${VMESS_UUID:-}" | tr -d '\r' | xargs)"
+  if [[ -n "$VMESS_UUID" ]] && [[ "$VMESS_UUID" != "$PLACEHOLDER_VMESS_UUID" ]]; then
     return 0
   fi
-  VMESS_UUID="$(gen_random_uuid)" || exit 1
+  VMESS_UUID="$(gen_random_uuid | tr -d '\r\n' | xargs)" || exit 1
   echo "[install] 已生成新的 VMess UUID 并写入本目录 config.sh（请勿使用仓库占位 UUID）"
   if [[ -f config.sh ]] && grep -qE '^[[:space:]]*VMESS_UUID=' config.sh; then
     sed -i "s|^[[:space:]]*VMESS_UUID=.*|VMESS_UUID=\"${VMESS_UUID}\"|" config.sh
@@ -86,6 +87,7 @@ ensure_vmess_uuid() {
   fi
 }
 ensure_vmess_uuid
+VMESS_UUID="$(printf '%s' "${VMESS_UUID:-}" | tr -d '\r' | xargs)"
 
 write_tunnel_conf() {
   cat > /etc/v6-proxy-tunnel.conf << EOF
@@ -528,22 +530,48 @@ print_inbound_client_hint() {
   echo ""
   echo "[install] 客户端入站：请在云安全组/防火墙放行 TCP ${VMESS_PORT_64}、${VMESS_PORT_48}（WebSocket，路径 ${VMESS_WS_PATH}，无 TLS）"
   echo "[install] 若本机自检通过但外网连不上，多半是上述端口未对公网开放。"
+  echo "[install] 本机监听（应对 0.0.0.0:端口 与 xray 进程）:"
+  ss -tlnp 2>/dev/null | grep -E ":${VMESS_PORT_64}\b|:${VMESS_PORT_48}\b" || ss -tlnp | grep -E '48442|54661' || echo "  (未检测到监听，请检查 xray 是否启动)"
+}
+
+# 无 Python 时生成单条 vmess://（紧凑 JSON + base64）
+vmess_uri_one() {
+  local ps="$1" addr="$2" port="$3" uuid="$4" path="$5"
+  local j b64
+  j=$(printf '{"v":"2","ps":"%s","add":"%s","port":"%s","id":"%s","aid":"0","scy":"auto","net":"ws","type":"none","host":"","path":"%s","tls":"none"}' "$ps" "$addr" "$port" "$uuid" "$path")
+  if command -v base64 >/dev/null 2>&1; then
+    b64=$(printf '%s' "$j" | base64 -w0 2>/dev/null || printf '%s' "$j" | base64 | tr -d '\n')
+  else
+    b64=$(printf '%s' "$j" | openssl base64 -A 2>/dev/null)
+  fi
+  printf 'vmess://%s\n' "$b64"
 }
 
 write_vmess_links_file() {
-  local pub path64 path48
+  local pub path64 ts uuid p64 p48
   pub="$(public_ip_for_vmess)"
+  pub="$(printf '%s' "$pub" | tr -d '\r\n\t ' | xargs)"
   path64="${VMESS_WS_PATH:-/vmess-ipv6}"
-  path48="$path64"
-  python3 << PY
-import json, base64
-pub = "${pub}"
-uuid = "${VMESS_UUID}"
-p64 = int("${VMESS_PORT_64}")
-p48 = int("${VMESS_PORT_48}")
-path = "${path64}"
+  path64="$(printf '%s' "$path64" | tr -d '\r\n' | xargs)"
+  uuid="$(printf '%s' "${VMESS_UUID:-}" | tr -d '\r\n' | xargs)"
+  p64="${VMESS_PORT_64}"
+  p48="${VMESS_PORT_48}"
+  ts="$(date -Iseconds 2>/dev/null || date)"
 
-def link(ps, port):
+  if [[ ${#uuid} -lt 32 ]]; then
+    echo "[install] 警告: VMESS_UUID 异常短（${#uuid} 字符），请检查 config.sh" >&2
+  fi
+
+  {
+    echo "# VMess（随机 IPv6 出口：/64 与 /48）"
+    echo "# 生成时间: $ts"
+    echo "# 公网展示: $pub  隧道 local(内网): ${TUNNEL_LOCAL_IPV4}"
+    echo ""
+    if command -v python3 >/dev/null 2>&1; then
+      VMESS_LINK_PUB="$pub" VMESS_LINK_UUID="$uuid" VMESS_LINK_PATH="$path64" VMESS_LINK_P64="$p64" VMESS_LINK_P48="$p48" VMESS_LINK_TUN="${TUNNEL_LOCAL_IPV4:-}" VMESS_LINK_TS="$ts" python3 <<'PY'
+import os, json, base64
+
+def link(pub, ps, port, uuid, path):
     o = {
         "v": "2",
         "ps": ps,
@@ -562,23 +590,31 @@ def link(ps, port):
         json.dumps(o, separators=(",", ":"), ensure_ascii=False).encode()
     ).decode()
 
+pub = os.environ["VMESS_LINK_PUB"].strip()
+uuid = os.environ["VMESS_LINK_UUID"].strip()
+path = os.environ["VMESS_LINK_PATH"].strip()
+p64 = int(os.environ["VMESS_LINK_P64"])
+p48 = int(os.environ["VMESS_LINK_P48"])
 lines = [
-    "# VMess（随机 IPv6 出口：/64 与 /48）",
-    "# 生成时间: $(date -Iseconds)",
-    f"# 公网展示: {pub}  隧道 local(内网): ${TUNNEL_LOCAL_IPV4}",
-    "",
     "## " + pub + "+64",
-    link(pub + "+64", p64),
+    link(pub, pub + "+64", p64, uuid, path),
     "",
     "## " + pub + "+48",
-    link(pub + "+48", p48),
+    link(pub, pub + "+48", p48, uuid, path),
     "",
 ]
-open("vmess-links.txt", "w", encoding="utf-8").write("\\n".join(lines) + "\\n")
-for x in lines:
-    if x.startswith("vmess://"):
-        print(x)
+for line in lines:
+    print(line)
 PY
+    else
+      vmess_uri_one "${pub}+64" "$pub" "$p64" "$uuid" "$path64"
+      echo ""
+      vmess_uri_one "${pub}+48" "$pub" "$p48" "$uuid" "$path64"
+      echo ""
+    fi
+  } >vmess-links.txt
+
+  grep '^vmess://' vmess-links.txt || true
 }
 
 run_self_tests() {
