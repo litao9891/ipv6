@@ -1,79 +1,78 @@
 # 随机 IPv6 + VMess 部署包
 
-本机通过 TunnelBroker + v6-proxy + Xray 实现随机 IPv6 出口，仅 IPv4 拒绝，带自动修复。
+本机通过 [TunnelBroker](https://tunnelbroker.net/) + [v6-proxy](https://github.com/zbronya/v6-proxy) + [Xray](https://github.com/XTLS/Xray-core) 实现从 HE 下发的 **Routed /64** 与 **Routed /48** 中随机选源 IPv6 出站；入站为两条 **VMess over WebSocket**（分别走 /64 与 /48 的本地 HTTP 代理）。
 
-## 功能
-- 随机 IPv6 出口（从 Routed /64 中随机）
-- VMess WebSocket 入站
-- 仅 IPv6，不返回 IPv4（--force-ipv6）
-- 每分钟自动检测并修复
-- IP 变化时隧道自动修复
+仓库：**[litao9891/ipv6](https://github.com/litao9891/ipv6)**
 
-## 前提
-- 新 VPS 已申请 [TunnelBroker.net](https://tunnelbroker.net) 隧道
-- 无需预装 v2ray-agent，脚本会自动安装 Xray
+## 功能概要
 
-## 部署到新 VPS
+- 双随机 IPv6 出口：**Routed /64**（`127.0.0.1:33300`）与 **Routed /48**（`127.0.0.1:33301`）
+- **VMess + WS**：`0.0.0.0` 监听，路由按入站标签分流到上述两个代理
+- **Netplan SIT** 隧道：`local` 使用 **内网 IPv4**（`ip -4 route get 8.8.8.8` 的 `src`），与 HE 控制台里填写的 Client IPv4（公网）可不一致（适合 Oracle 等仅内网走协议 41 的环境）
+- `fix-he-ipv6-tunnel.sh` + **timer** 周期性对齐隧道与本地路由
+- **cron** 每分钟调用 `v6-proxy-auto-repair.sh` 做连通性自检与修复
 
-### 1. 下载部署包
-
-在当前 VPS 上打包：
-```bash
-cd /root
-tar czvf v6-proxy-random-ipv6-deploy.tar.gz v6-proxy-random-ipv6-deploy/
-# 用 scp 或对象存储下载到本地，再上传到新 VPS
-```
-
-### 2. 在新 VPS 上修改配置
-
-解压后编辑 `config.sh`，填入**新 VPS** 的 TunnelBroker 参数：
-
-| 参数 | 说明 | 示例 |
-|------|------|------|
-| HE_SERVER_IP | HE 隧道服务器 IPv4 | 66.220.18.42 |
-| CLIENT_INTERNAL_IP | 本机内网 IPv4 | 10.0.0.83 |
-| TUNNEL_IPV6_PREFIX | 隧道链路前缀（Client ::2, Gateway ::1） | 2001:470:c:12e5 |
-| ROUTED_PREFIX | 随机出口的 /64 前缀 | 2001:470:d:12e1 |
-| PRIMARY_INTERFACE | 主网卡名 | enp0s3 或 eth0 |
-
-在 TunnelBroker 控制台可看到：
-- Server IPv4 Address → HE_SERVER_IP
-- Client IPv4 Address → 填**内网 IP**（如 10.0.0.83）
-- Client IPv6 Address → 推导 TUNNEL_IPV6_PREFIX（如 2001:470:c:12e5::2/64 → 2001:470:c:12e5）
-- Routed /64 → 推导 ROUTED_PREFIX（如 2001:470:d:12e1::/64 → 2001:470:d:12e1）
-
-### 3. 运行安装（一键完成，含 Xray 自动安装）
+## 首次部署
 
 ```bash
-cd v6-proxy-random-ipv6-deploy
+git clone https://github.com/litao9891/ipv6.git
+cd ipv6
+# 编辑 config.sh（至少 HE_SERVER_IP、隧道与 Routed 前缀、VMESS_UUID），或使用下一节粘贴脚本
 sudo bash install.sh
 ```
 
-### 4. 验证
+验证：
 
 ```bash
-curl --proxy http://127.0.0.1:33300 http://ipv6.icanhazip.com
-# 应返回 2001:470:xx:xx:xxxx:xxxx:xxxx:xxxx 形式
+curl --proxy http://127.0.0.1:33300 --max-time 15 http://ipv6.icanhazip.com
+curl --proxy http://127.0.0.1:33301 --max-time 15 http://ipv6.icanhazip.com
 ```
 
-## 换 IP 后
+成功后同目录会生成 **`vmess-links.txt`**（含两条 `vmess://`，备注为 `公网IP+64` / `公网IP+48`）。
 
-VPS 公网 IP 变更时：
+## 从 HE 控制台粘贴自动更新（推荐）
 
-1. 在 TunnelBroker 控制台把 **Client IPv4 Address** 改为新公网 IP
-2. 若内网 IP 也变，编辑 `/etc/v6-proxy-tunnel.conf` 中的 `CLIENT_INTERNAL_IP`
-3. 执行：
-   ```bash
-   ip link delete he-ipv6 2>/dev/null
-   netplan apply
-   systemctl start ipv6-anyip
-   systemctl restart v6-proxy xray
-   ```
-   或运行：`/usr/local/bin/fix-he-ipv6-tunnel.sh`
+把 TunnelBroker 页面上的说明整段复制（需包含 **Server IPv4**、**Client IPv4**、**Client IPv6**、**Routed /64**、**Routed /48**；可附带 netplan 片段，脚本会忽略其中的 `local:` 公网地址）。
+
+```bash
+cd ipv6
+sudo bash apply-he-paste.sh
+# 粘贴后 Ctrl+D
+
+# 或从文件:
+sudo bash apply-he-paste.sh he-info.txt
+```
+
+脚本会：
+
+1. 解析 HE 参数；**`TUNNEL_LOCAL_IPV4` / netplan `local:`** 一律改为当前机器 **`ip -4 route get 8.8.8.8` 的内网 `src`**
+2. 将 **`HE_CLIENT_IPV4_PUBLIC`** 设为粘贴里的 Client IPv4（用于 VMess 里的 `add` 展示）
+3. 写入 `config.sh` 与 `/etc` 下相关配置，执行 **`install.sh --config-only`**
+4. 自检两条 v6-proxy，并刷新 **`vmess-links.txt`**
+
+**注意**：若你在 HE 网页把 **Client IPv4** 改成了新公网，请与脚本解析结果一致；隧道在云上仍可能必须用 **内网 IP** 作 SIT `local`，以实际探测为准。
+
+## 换 VPS / 仅换隧道后
+
+- 用 **`apply-he-paste.sh`** 重新粘贴；或手工改 `config.sh` 后执行：
+
+```bash
+sudo bash install.sh --config-only
+```
+
+- 若隧道异常，可执行：`sudo /usr/local/bin/fix-he-ipv6-tunnel.sh`
 
 ## 文件说明
 
-- config.sh - 部署参数（换 VPS 必改）
-- install.sh - 一键安装
-- v6-proxy - 二进制（可选，无则自动下载）
-- README.md - 本说明
+| 文件 | 说明 |
+|------|------|
+| `config.sh` | 全部可调参数（仓库内为示例，勿提交真实生产 UUID） |
+| `install.sh` | 一键安装；`--config-only` 仅同步系统配置并重启服务 |
+| `apply-he-paste.sh` | 从粘贴文本解析并调用 `install.sh --config-only` |
+| `v6-proxy` | 可选本地二进制；若无则从 GitHub Release 下载 |
+| `vmess-links.txt` | 由安装/应用脚本生成（已在 `.gitignore` 中忽略） |
+
+## 安全提示
+
+- `config.sh` / `vmess-links.txt` 含 **UUID** 与地址信息，请勿把生产配置推送到公开仓库。
+- 生产环境建议为 VMess 增加 **TLS + CDN** 或 **防火墙限制来源 IP**。

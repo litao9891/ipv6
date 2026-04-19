@@ -1,25 +1,33 @@
 # ============================================================
-# 随机 IPv6 部署配置 - 换 VPS 时修改此处
-# 从 TunnelBroker.net 获取这些值
+# 随机 IPv6 部署配置
+# 推荐：在 VPS 上执行 sudo bash apply-he-paste.sh 从 HE 控制台粘贴自动生成。
+# 或手工修改下列变量后执行 sudo bash install.sh
 # ============================================================
 
-# HE 隧道服务器 IPv4
-HE_SERVER_IP="66.220.18.42"
+# HE 隧道服务器 IPv4（TunnelBroker → Server IPv4 Address）
+HE_SERVER_IP="CHANGE_ME"
 
-# 本机内网 IPv4（VPS 主网卡 IP，如 10.0.0.83）
-CLIENT_INTERNAL_IP="10.0.0.83"
+# TunnelBroker 控制台里的 Client IPv4（公网，用于 VMess 地址展示；可先留空后由脚本填充）
+HE_CLIENT_IPV4_PUBLIC=""
 
-# 隧道链路 IPv6 网段（/64，Client 用 ::2，Server 用 ::1）
+# SIT / netplan 的 local= 须为「默认出口内网源地址」；留空则 install / apply-he-paste 自动探测
+TUNNEL_LOCAL_IPV4=""
+CLIENT_INTERNAL_IP=""
+
+# 隧道链路前缀：来自 Client IPv6 Address 中 ::2/64 前一段（例 2001:470:c:12e5::2/64 → 2001:470:c:12e5）
 TUNNEL_IPV6_PREFIX="2001:470:c:12e5"
 TUNNEL_IPV6_CLIENT="${TUNNEL_IPV6_PREFIX}::2/64"
 TUNNEL_IPV6_GATEWAY="${TUNNEL_IPV6_PREFIX}::1"
 
-# 随机出口的 Routed /64 网段
-ROUTED_PREFIX="2001:470:d:12e1"
-ROUTED_CIDR="${ROUTED_PREFIX}::/64"
+# HE Routed 前缀
+ROUTED_64_CIDR="2001:470:d:12e1::/64"
+ROUTED_48_CIDR="2001:470:example::/48"
 
-# 主网卡名称（enp0s3 或 eth0）
-PRIMARY_INTERFACE="enp0s3"
+# 主网卡；留空则自动从 default route 推断
+PRIMARY_INTERFACE=""
 
-# VMess UUID
-VMESS_UUID="00b27eb5-deed-451e-8bea-9006726793ca"
+# VMess（部署前请改成你自己的 UUID）
+VMESS_UUID="00000000-0000-4000-8000-000000000001"
+VMESS_PORT_64="48442"
+VMESS_PORT_48="54661"
+VMESS_WS_PATH="/vmess-ipv6"
