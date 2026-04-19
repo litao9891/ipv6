@@ -4,12 +4,20 @@
 
 ## 一键（推荐）
 
-在**已存在部署目录**（例如 `/root/v6-proxy-random-ipv6-deploy`）下：
+在**已存在部署目录**（例如 `/root/v6-proxy-random-ipv6-deploy`）下执行：
+
+```bash
+sudo bash onekey.sh
+```
+
+会出现**数字菜单**：**1 安装**、**2 更新 IP**（粘贴 HE）、**3 重启服务**、**0 退出**。
 
 | 目的 | 命令 |
 |------|------|
+| **数字菜单** | `sudo bash onekey.sh` |
 | **更新脚本 + 按本机配置重启** | `sudo bash onekey.sh update` |
 | **换隧道 / 换 IP（粘贴 HE 整段说明）** | `sudo bash onekey.sh ip`（粘贴后 Ctrl+D；或 `sudo bash onekey.sh ip he.txt`） |
+| **仅重启服务**（不拉脚本） | `sudo bash onekey.sh restart` |
 | **完整重装 / 首次强制全量安装** | `sudo bash onekey.sh install` |
 
 `onekey.sh` 会先从 **`https://raw.githubusercontent.com/litao9891/ipv6/main`** 拉取最新 `install.sh`、`apply-he-paste.sh` 等（**不会覆盖**你已存在的 `config.sh`）。可用环境变量 **`V6_REPO_RAW`** 指向自己的 fork。
