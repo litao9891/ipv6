@@ -44,7 +44,26 @@ fi
 : "${VMESS_WS_PATH:=/vmess-ipv6}"
 : "${VMESS_PORT_64:=48442}"
 : "${VMESS_PORT_48:=54661}"
-: "${VMESS_UUID:?请在 config.sh 设置 VMESS_UUID}"
+
+# 仓库示例 UUID / 空值 会导致客户端与「占位」一致或易混淆；首次安装自动替换并写回 config.sh
+PLACEHOLDER_VMESS_UUID="00000000-0000-4000-8000-000000000001"
+ensure_vmess_uuid() {
+  if [[ -n "${VMESS_UUID:-}" ]] && [[ "$VMESS_UUID" != "$PLACEHOLDER_VMESS_UUID" ]]; then
+    return 0
+  fi
+  if command -v uuidgen >/dev/null 2>&1; then
+    VMESS_UUID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  else
+    VMESS_UUID="$(python3 -c 'import uuid; print(str(uuid.uuid4()))')"
+  fi
+  echo "[install] 已生成新的 VMess UUID 并写入本目录 config.sh（请勿使用仓库占位 UUID）"
+  if [[ -f config.sh ]] && grep -qE '^[[:space:]]*VMESS_UUID=' config.sh; then
+    sed -i "s|^[[:space:]]*VMESS_UUID=.*|VMESS_UUID=\"${VMESS_UUID}\"|" config.sh
+  else
+    printf '\nVMESS_UUID="%s"\n' "$VMESS_UUID" >>config.sh
+  fi
+}
+ensure_vmess_uuid
 
 write_tunnel_conf() {
   cat > /etc/v6-proxy-tunnel.conf << EOF
@@ -414,7 +433,15 @@ install_v6_proxy_binary() {
   if [[ -f ./v6-proxy ]]; then
     cp ./v6-proxy /usr/local/bin/v6-proxy
   elif [[ ! -x /usr/local/bin/v6-proxy ]]; then
-    wget -q -O /usr/local/bin/v6-proxy "$BIN_URL" || curl -sL -o /usr/local/bin/v6-proxy "$BIN_URL"
+    echo "[install] 正在下载 v6-proxy（若久无输出，请检查能否访问 GitHub）..."
+    if command -v curl >/dev/null 2>&1; then
+      curl -fL --connect-timeout 20 --max-time 300 -o /usr/local/bin/v6-proxy "$BIN_URL" || {
+        echo "[install] curl 失败，尝试 wget..."
+        wget -q --timeout=300 -O /usr/local/bin/v6-proxy "$BIN_URL"
+      }
+    else
+      wget -q --timeout=300 -O /usr/local/bin/v6-proxy "$BIN_URL"
+    fi
   fi
   chmod +x /usr/local/bin/v6-proxy
 }
@@ -424,7 +451,7 @@ install_xray_if_missing() {
   if [[ -x "$XRAY_DIR/xray" ]]; then
     return 0
   fi
-  echo "[install] 下载 Xray..."
+  echo "[install] 下载 Xray（查询版本与拉包可能需要 1～3 分钟，请稍候）..."
   mkdir -p "$XRAY_DIR" "$XRAY_DIR/conf"
   local ARCH XRAY_ARCH XRAY_VER XRAY_ZIP XRAY_URL
   ARCH=$(uname -m)
@@ -434,12 +461,13 @@ install_xray_if_missing() {
     armv7l) XRAY_ARCH="arm32-v7a" ;;
     *) echo "不支持的架构: $ARCH"; exit 1 ;;
   esac
-  XRAY_VER=$(curl -s "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+  XRAY_VER=$(curl -fsSL --connect-timeout 15 --max-time 30 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
   [[ -z "$XRAY_VER" ]] && XRAY_VER="v25.1.1"
+  echo "[install] 使用 Xray 版本: $XRAY_VER"
   XRAY_ZIP="Xray-linux-${XRAY_ARCH}.zip"
   XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/${XRAY_ZIP}"
-  (cd /tmp && (wget -q -O xray.zip "$XRAY_URL" || curl -sL -o xray.zip "$XRAY_URL") && unzip -o -q xray.zip && mv xray "$XRAY_DIR/" && for f in geoip.dat geosite.dat; do [[ -f "$f" ]] && mv "$f" "$XRAY_DIR/"; done && rm -f xray.zip) || {
-    echo "Xray 下载失败"
+  (cd /tmp && rm -f xray.zip && (curl -fL --connect-timeout 30 --max-time 600 -o xray.zip "$XRAY_URL" || wget -q --timeout=600 -O xray.zip "$XRAY_URL") && unzip -o -q xray.zip && mv xray "$XRAY_DIR/" && for f in geoip.dat geosite.dat; do [[ -f "$f" ]] && mv "$f" "$XRAY_DIR/"; done && rm -f xray.zip) || {
+    echo "Xray 下载失败（网络或 GitHub 受限），请换网络或代理后重试"
     exit 1
   }
   chmod +x "$XRAY_DIR/xray"
@@ -472,6 +500,12 @@ public_ip_for_vmess() {
     return
   fi
   curl -4 -fsS --max-time 8 https://ipv4.icanhazip.com 2>/dev/null | tr -d '[:space:]' || echo "127.0.0.1"
+}
+
+print_inbound_client_hint() {
+  echo ""
+  echo "[install] 客户端入站：请在云安全组/防火墙放行 TCP ${VMESS_PORT_64}、${VMESS_PORT_48}（WebSocket，路径 ${VMESS_WS_PATH}，无 TLS）"
+  echo "[install] 若本机自检通过但外网连不上，多半是上述端口未对公网开放。"
 }
 
 write_vmess_links_file() {
@@ -562,6 +596,7 @@ if [[ "$CONFIG_ONLY" -eq 1 ]]; then
   echo ""
   echo "[install] vmess-links.txt 与 vmess:// 如下:"
   write_vmess_links_file
+  print_inbound_client_hint
   exit 0
 fi
 
@@ -575,10 +610,14 @@ echo "Routed /48: $ROUTED_48_CIDR"
 echo "主网卡: $PRIMARY_INTERFACE"
 echo "VMess: ${VMESS_PORT_64}(/64) ${VMESS_PORT_48}(/48) path=${VMESS_WS_PATH}"
 echo "=========================================="
-if [[ -t 0 ]]; then
-  read -r -p "确认无误后按回车继续，Ctrl+C 取消..."
+if [[ -t 0 ]] && [[ "${SKIP_CONFIRM:-0}" != "1" ]]; then
+  echo ""
+  echo ">>> 停在这里不是卡死：请核对上面参数，确认后按【回车】继续下载与安装 <<<"
+  echo "    （全自动可: SKIP_CONFIRM=1 sudo bash $0）"
+  echo ""
+  read -r -p "按回车继续，Ctrl+C 取消..."
 else
-  echo "非交互终端，跳过确认，继续安装..."
+  echo "跳过确认（非交互或 SKIP_CONFIRM=1），继续安装..."
 fi
 
 install_v6_proxy_binary
@@ -599,6 +638,7 @@ systemctl restart xray 2>/dev/null || true
 sleep 2
 run_self_tests
 write_vmess_links_file
+print_inbound_client_hint
 
 echo ""
 echo "部署完成。详情见 README.md；换隧道可运行: sudo bash apply-he-paste.sh"

@@ -107,6 +107,17 @@ sudo bash install.sh --config-only
 
 部署逻辑与说明同步维护在 GitHub：**[litao9891/ipv6](https://github.com/litao9891/ipv6)**。将本目录内容推送到该仓库即可更新文档与脚本。
 
+## 安装时像「卡住」？
+
+1. **先按一下回车**：`install.sh` 在下载前会打印参数摘要并 **`read` 等待回车**，不是死机。  
+2. **不想人工确认**：`SKIP_CONFIRM=1 sudo bash install.sh`  
+3. **长时间无输出**：多半在静默下载 **v6-proxy / Xray**（需能访问 GitHub）；已加超时与提示；若机房屏蔽 GitHub，需代理或本地上传二进制。
+
+## VMess UUID 与客户端连不上
+
+- **`install.sh` / `install.sh --config-only`**：若 `config.sh` 里 **`VMESS_UUID` 为空** 或为仓库**占位 UUID**（`00000000-0000-4000-8000-000000000001`），会自动 **`uuidgen` 写入 `config.sh`** 并同步到 Xray，避免多人共用示例 UUID。  
+- **自检通过但外网客户端连不上**：多半是 **云安全组未放行入站 TCP `VMESS_PORT_64` / `VMESS_PORT_48`**（默认 48442、54661）。安装结束会再次提示。
+
 ## 安全提示
 
 - `config.sh` / `vmess-links.txt` 含 **UUID** 与地址信息，请勿公开泄露。

@@ -26,8 +26,8 @@ ROUTED_48_CIDR="2001:470:example::/48"
 # 主网卡；留空则自动从 default route 推断
 PRIMARY_INTERFACE=""
 
-# VMess（部署前请改成你自己的 UUID）
-VMESS_UUID="00000000-0000-4000-8000-000000000001"
+# VMess：留空或保持占位则首次 install 会自动 uuidgen 并写回本文件（勿多人共用示例 UUID）
+VMESS_UUID=""
 VMESS_PORT_64="48442"
 VMESS_PORT_48="54661"
 VMESS_WS_PATH="/vmess-ipv6"
