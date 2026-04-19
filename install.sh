@@ -46,16 +46,38 @@ fi
 : "${VMESS_PORT_48:=54661}"
 
 # 仓库示例 UUID / 空值 会导致客户端与「占位」一致或易混淆；首次安装自动替换并写回 config.sh
+# 生成顺序：uuidgen → Linux 内核 /proc → openssl → python3（无需同时安装）
 PLACEHOLDER_VMESS_UUID="00000000-0000-4000-8000-000000000001"
+
+gen_random_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+    return 0
+  fi
+  if [[ -r /proc/sys/kernel/random/uuid ]]; then
+    tr '[:upper:]' '[:lower:]' </proc/sys/kernel/random/uuid
+    return 0
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    local h v
+    h=$(openssl rand -hex 16)
+    v=$(( (0x${h:16:1} % 4) + 8 ))
+    printf '%s-%s-4%s-%x%s-%s\n' "${h:0:8}" "${h:8:4}" "${h:12:3}" "$v" "${h:17:3}" "${h:20:12}"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import uuid; print(str(uuid.uuid4()))'
+    return 0
+  fi
+  echo "[install] 错误: 无法生成随机 UUID，请安装 util-linux(uuidgen)、openssl 或 python3 之一" >&2
+  return 1
+}
+
 ensure_vmess_uuid() {
   if [[ -n "${VMESS_UUID:-}" ]] && [[ "$VMESS_UUID" != "$PLACEHOLDER_VMESS_UUID" ]]; then
     return 0
   fi
-  if command -v uuidgen >/dev/null 2>&1; then
-    VMESS_UUID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-  else
-    VMESS_UUID="$(python3 -c 'import uuid; print(str(uuid.uuid4()))')"
-  fi
+  VMESS_UUID="$(gen_random_uuid)" || exit 1
   echo "[install] 已生成新的 VMess UUID 并写入本目录 config.sh（请勿使用仓库占位 UUID）"
   if [[ -f config.sh ]] && grep -qE '^[[:space:]]*VMESS_UUID=' config.sh; then
     sed -i "s|^[[:space:]]*VMESS_UUID=.*|VMESS_UUID=\"${VMESS_UUID}\"|" config.sh
