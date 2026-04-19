@@ -28,6 +28,7 @@ ensure_iptables_vmess_inbound() {
       iptables -A INPUT -p tcp -m tcp --dport "$port" -j ACCEPT 2>/dev/null && echo "[install] 已追加: ACCEPT tcp dport $port"
     fi
   done
+  ensure_iptables_block_ipv4_outbound
   if command -v netfilter-persistent >/dev/null 2>&1; then
     netfilter-persistent save 2>/dev/null && echo "[install] 已执行 netfilter-persistent save" || true
   elif command -v iptables-save >/dev/null 2>&1; then
@@ -36,6 +37,37 @@ ensure_iptables_vmess_inbound() {
       echo "[install] 已写入 /etc/iptables/rules.v4（若已装 iptables-persistent 重启后仍有效）"
     fi
   fi
+}
+
+# 禁止 IPv4 出站（filter 表 OUTPUT 仅作用于 IPv4；隧道/本机/已建立连接除外）
+ensure_iptables_block_ipv4_outbound() {
+  [[ "${BLOCK_IPV4_OUTBOUND:-1}" == "1" ]] || {
+    echo "[install] BLOCK_IPV4_OUTBOUND!=1，跳过 IPv4 出站封锁"
+    return 0
+  }
+  command -v iptables >/dev/null 2>&1 || return 0
+  [[ -n "${HE_SERVER_IP:-}" && "$HE_SERVER_IP" != "CHANGE_ME" ]] || {
+    echo "[install] HE_SERVER_IP 未就绪，跳过 IPv4 出站封锁"
+    return 0
+  }
+  local CH=V6PROXY_OUT4
+  iptables -N "$CH" 2>/dev/null || iptables -F "$CH"
+  iptables -A "$CH" -o lo -j RETURN
+  iptables -A "$CH" -d 127.0.0.0/8 -j RETURN
+  iptables -A "$CH" -d "${HE_SERVER_IP}/32" -j RETURN
+  iptables -A "$CH" -d 169.254.169.254/32 -j RETURN
+  iptables -A "$CH" -p 41 -j RETURN
+  iptables -A "$CH" -m addrtype --dst-type LOCAL -j RETURN 2>/dev/null || true
+  if iptables -A "$CH" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN 2>/dev/null; then
+    :
+  else
+    iptables -A "$CH" -m state --state ESTABLISHED,RELATED -j RETURN 2>/dev/null || true
+  fi
+  iptables -A "$CH" -d 0.0.0.0/0 -j REJECT --reject-with icmp-admin-prohibited
+  if ! iptables -C OUTPUT -j "$CH" 2>/dev/null; then
+    iptables -I OUTPUT 1 -j "$CH"
+  fi
+  echo "[install] 已启用 OUTPUT→${CH}：默认拒绝 IPv4 出站（已放行 lo/127/HE ${HE_SERVER_IP}/proto41/元数据/已建立连接）"
 }
 
 if [[ "${1:-}" == "--iptables-only" ]]; then
@@ -301,8 +333,8 @@ set -e
 log() { echo "\$(date '+%Y-%m-%d %H:%M:%S') [v6-proxy-repair] \$*"; }
 
 check_proxy() {
-  curl -sf --connect-timeout 5 --max-time 12 --proxy http://127.0.0.1:33300 http://ipv6.icanhazip.com >/dev/null 2>&1 \\
-   && curl -sf --connect-timeout 5 --max-time 12 --proxy http://127.0.0.1:33301 http://ipv6.icanhazip.com >/dev/null 2>&1
+  curl -6 -sf --connect-timeout 5 --max-time 12 --proxy http://127.0.0.1:33300 http://ipv6.icanhazip.com >/dev/null 2>&1 \\
+   && curl -6 -sf --connect-timeout 5 --max-time 12 --proxy http://127.0.0.1:33301 http://ipv6.icanhazip.com >/dev/null 2>&1
 }
 
 do_repair() {
@@ -363,6 +395,7 @@ EOF
   cat > "$XRAY_CONF/09_routing.json" << 'EOF'
 {
   "routing": {
+    "domainStrategy": "UseIPv6",
     "rules": [
       {"type": "field", "inboundTag": ["VMess_64"], "outboundTag": "v6_proxy_64_outbound"},
       {"type": "field", "inboundTag": ["VMess_48"], "outboundTag": "v6_proxy_48_outbound"}
@@ -570,11 +603,19 @@ restart_stack() {
 }
 
 public_ip_for_vmess() {
-  if [[ -n "${HE_CLIENT_IPV4_PUBLIC:-}" ]]; then
-    echo "$HE_CLIENT_IPV4_PUBLIC"
+  local p
+  p="$(printf '%s' "${HE_CLIENT_IPV4_PUBLIC:-}" | tr -d '\r\n' | xargs)"
+  if [[ -n "$p" ]]; then
+    echo "$p"
     return
   fi
-  curl -4 -fsS --max-time 8 https://ipv4.icanhazip.com 2>/dev/null | tr -d '[:space:]' || echo "127.0.0.1"
+  # 不再发起 IPv4 出站探测；取主网卡全局 IPv4（多为云厂商公网，仅作 VMess 展示）
+  p=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+  if [[ -n "$p" ]]; then
+    echo "$p"
+    return
+  fi
+  echo "127.0.0.1"
 }
 
 print_inbound_client_hint() {
@@ -583,6 +624,7 @@ print_inbound_client_hint() {
   echo "[install] 若本机自检通过但外网连不上：请查云安全组 + 本机 iptables（install 已尝试自动放行 VMess 端口）。"
   echo "[install] 本机监听（应对 0.0.0.0:端口 与 xray 进程）:"
   ss -tlnp 2>/dev/null | grep -E ":${VMESS_PORT_64}\b|:${VMESS_PORT_48}\b" || ss -tlnp | grep -E '48442|54661' || echo "  (未检测到监听，请检查 xray 是否启动)"
+  echo "[install] IPv4 出站：已用 iptables OUTPUT 链默认拒绝（隧道/本机除外）；关闭请在 config.sh 设 BLOCK_IPV4_OUTBOUND=0 后 --config-only。"
 }
 
 # 无 Python 时生成单条 vmess://（紧凑 JSON + base64）
@@ -678,8 +720,8 @@ run_self_tests() {
     echo "ping6 网关 无响应（若下方 v6-proxy 正常可忽略）"
   fi
   local o64 o48
-  o64="$(curl -sf --max-time 15 --proxy http://127.0.0.1:33300 http://ipv6.icanhazip.com || true)"
-  o48="$(curl -sf --max-time 15 --proxy http://127.0.0.1:33301 http://ipv6.icanhazip.com || true)"
+  o64="$(curl -6 -sf --max-time 15 --proxy http://127.0.0.1:33300 http://ipv6.icanhazip.com || true)"
+  o48="$(curl -6 -sf --max-time 15 --proxy http://127.0.0.1:33301 http://ipv6.icanhazip.com || true)"
   if [[ -n "$o64" ]]; then echo "v6-proxy /64 → $o64"; else echo "v6-proxy 33300 失败"; ok=0; fi
   if [[ -n "$o48" ]]; then echo "v6-proxy /48 → $o48"; else echo "v6-proxy 33301 失败"; ok=0; fi
   [[ "$ok" -eq 1 ]] && echo "======== 核心自检通过（随机 IPv6 出口可用）========" || echo "======== v6-proxy 异常，请查隧道/防火墙/HE 控制台 Client IPv4 =========="

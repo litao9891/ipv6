@@ -113,6 +113,13 @@ sudo bash install.sh --config-only
 2. **不想人工确认**：`SKIP_CONFIRM=1 sudo bash install.sh`  
 3. **长时间无输出**：多半在静默下载 **v6-proxy / Xray**（需能访问 GitHub）；已加超时与提示；若机房屏蔽 GitHub，需代理或本地上传二进制。
 
+## 禁止 IPv4 出站
+
+- 安装 / `--config-only` / `--iptables-only` 会在 **iptables filter OUTPUT**（仅 IPv4）挂接链 **`V6PROXY_OUT4`**：默认 **REJECT** 访问公网 IPv4，**放行** `lo`、`127.0.0.0/8`、**HE `HE_SERVER_IP`**、**proto 41（6in4）**、**169.254.169.254**（部分云元数据）、**已建立连接**。  
+- **v6-proxy / Xray 走 IPv6** 不受影响。  
+- 需要临时放行 IPv4 出站：在 `config.sh` 设 **`BLOCK_IPV4_OUTBOUND=0`** 后执行 `sudo bash install.sh --config-only` 或 `sudo iptables -D OUTPUT -j V6PROXY_OUT4` 并自行维护规则。  
+- **`public_ip_for_vmess`** 不再使用 **`curl -4`**；优先 **`HE_CLIENT_IPV4_PUBLIC`**，否则取 **`ip -4` 全局地址** 写入 VMess 展示字段。
+
 ## VMess UUID 与客户端连不上
 
 - **`install.sh` / `install.sh --config-only`**：若 `config.sh` 里 **`VMESS_UUID` 为空** 或为仓库**占位 UUID**（`00000000-0000-4000-8000-000000000001`），会按顺序尝试 **`uuidgen`** → **`/proc/sys/kernel/random/uuid`（Linux）** → **`openssl`** → **`python3`** 生成随机 UUID，写回 `config.sh` 并同步到 Xray；**不强制依赖 Python**。  

@@ -31,3 +31,6 @@ VMESS_UUID=""
 VMESS_PORT_64="48442"
 VMESS_PORT_48="54661"
 VMESS_WS_PATH="/vmess-ipv6"
+
+# 1=iptables 默认拒绝 IPv4 出站（放行 HE/127/proto41/元数据/已建立连接）；0=不封锁
+BLOCK_IPV4_OUTBOUND="1"
