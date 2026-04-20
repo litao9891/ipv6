@@ -32,5 +32,7 @@ VMESS_PORT_64="48442"
 VMESS_PORT_48="54661"
 VMESS_WS_PATH="/vmess-ipv6"
 
-# 1=iptables 默认拒绝 IPv4 出站（放行 HE/127/proto41/元数据/已建立连接）；0=不封锁
-BLOCK_IPV4_OUTBOUND="1"
+# IPv4 出站封锁开关：0=默认不启用（推荐）；1=启用
+BLOCK_IPV4_OUTBOUND="0"
+# 封锁模式：proxy_only=仅限制代理进程（推荐）；global=全机 OUTPUT（风险较高）
+IPV4_BLOCK_MODE="proxy_only"

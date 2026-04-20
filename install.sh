@@ -39,10 +39,14 @@ ensure_iptables_vmess_inbound() {
   fi
 }
 
-# 禁止 IPv4 出站（filter 表 OUTPUT 仅作用于 IPv4；隧道/本机/已建立连接除外）
+# 禁止 IPv4 出站（可选；默认关闭）
 ensure_iptables_block_ipv4_outbound() {
-  [[ "${BLOCK_IPV4_OUTBOUND:-1}" == "1" ]] || {
-    echo "[install] BLOCK_IPV4_OUTBOUND!=1，跳过 IPv4 出站封锁"
+  local enabled mode
+  enabled="$(printf '%s' "${BLOCK_IPV4_OUTBOUND:-0}" | tr -d '\r\n' | xargs)"
+  mode="$(printf '%s' "${IPV4_BLOCK_MODE:-proxy_only}" | tr -d '\r\n' | xargs)"
+  [[ -z "$mode" ]] && mode="proxy_only"
+  [[ "$enabled" == "1" ]] || {
+    echo "[install] BLOCK_IPV4_OUTBOUND=0（默认）：不启用 IPv4 出站封锁；如需启用请手动在 config.sh 打开后 --config-only"
     return 0
   }
   command -v iptables >/dev/null 2>&1 || return 0
@@ -64,10 +68,42 @@ ensure_iptables_block_ipv4_outbound() {
     iptables -A "$CH" -m state --state ESTABLISHED,RELATED -j RETURN 2>/dev/null || true
   fi
   iptables -A "$CH" -d 0.0.0.0/0 -j REJECT --reject-with icmp-admin-prohibited
-  if ! iptables -C OUTPUT -j "$CH" 2>/dev/null; then
-    iptables -I OUTPUT 1 -j "$CH"
-  fi
-  echo "[install] 已启用 OUTPUT→${CH}：默认拒绝 IPv4 出站（已放行 lo/127/HE ${HE_SERVER_IP}/proto41/元数据/已建立连接）"
+  while iptables -C OUTPUT -j "$CH" 2>/dev/null; do
+    iptables -D OUTPUT -j "$CH" || true
+  done
+  while iptables -C OUTPUT -m mark --mark 100 -j "$CH" 2>/dev/null; do
+    iptables -D OUTPUT -m mark --mark 100 -j "$CH" || true
+  done
+  while iptables -C OUTPUT -m mark --mark 101 -j "$CH" 2>/dev/null; do
+    iptables -D OUTPUT -m mark --mark 101 -j "$CH" || true
+  done
+
+  case "$mode" in
+    global)
+      if ! iptables -C OUTPUT -j "$CH" 2>/dev/null; then
+        iptables -I OUTPUT 1 -j "$CH"
+      fi
+      echo "[install] 已启用 GLOBAL 模式：OUTPUT→${CH}（全机 IPv4 出站将被限制，建议仅在明确需求时使用）"
+      ;;
+    proxy_only)
+      if ! iptables -C OUTPUT -m mark --mark 100 -j "$CH" 2>/dev/null; then
+        iptables -I OUTPUT 1 -m mark --mark 100 -j "$CH"
+      fi
+      if ! iptables -C OUTPUT -m mark --mark 101 -j "$CH" 2>/dev/null; then
+        iptables -I OUTPUT 1 -m mark --mark 101 -j "$CH"
+      fi
+      echo "[install] 已启用 PROXY_ONLY 模式：仅限制带 mark=100/101（Xray 代理出站）的 IPv4 流量"
+      ;;
+    *)
+      echo "[install] 未识别 IPV4_BLOCK_MODE=$mode，回退为 proxy_only"
+      if ! iptables -C OUTPUT -m mark --mark 100 -j "$CH" 2>/dev/null; then
+        iptables -I OUTPUT 1 -m mark --mark 100 -j "$CH"
+      fi
+      if ! iptables -C OUTPUT -m mark --mark 101 -j "$CH" 2>/dev/null; then
+        iptables -I OUTPUT 1 -m mark --mark 101 -j "$CH"
+      fi
+      ;;
+  esac
 }
 
 if [[ "${1:-}" == "--iptables-only" ]]; then
@@ -624,7 +660,43 @@ print_inbound_client_hint() {
   echo "[install] 若本机自检通过但外网连不上：请查云安全组 + 本机 iptables（install 已尝试自动放行 VMess 端口）。"
   echo "[install] 本机监听（应对 0.0.0.0:端口 与 xray 进程）:"
   ss -tlnp 2>/dev/null | grep -E ":${VMESS_PORT_64}\b|:${VMESS_PORT_48}\b" || ss -tlnp | grep -E '48442|54661' || echo "  (未检测到监听，请检查 xray 是否启动)"
-  echo "[install] IPv4 出站：已用 iptables OUTPUT 链默认拒绝（隧道/本机除外）；关闭请在 config.sh 设 BLOCK_IPV4_OUTBOUND=0 后 --config-only。"
+  if [[ "${BLOCK_IPV4_OUTBOUND:-0}" == "1" ]]; then
+    echo "[install] IPv4 出站限制已启用（模式: ${IPV4_BLOCK_MODE:-proxy_only}）；关闭请在 config.sh 设 BLOCK_IPV4_OUTBOUND=0 后 --config-only。"
+  else
+    echo "[install] IPv4 出站限制默认关闭；如需启用请在 config.sh 设 BLOCK_IPV4_OUTBOUND=1（推荐 IPV4_BLOCK_MODE=proxy_only）后 --config-only。"
+  fi
+}
+
+print_post_restart_validation() {
+  echo ""
+  echo "======== 重启后强校验 ========"
+  echo "[check] xray 监听端口（VMess）:"
+  ss -tlnp 2>/dev/null | awk -v p64="${VMESS_PORT_64}" -v p48="${VMESS_PORT_48}" '
+    $1=="LISTEN" && ($4 ~ (":" p64 "$") || $4 ~ (":" p48 "$")) { print "  " $0; found=1 }
+    END { if (!found) print "  未检测到 xray 监听目标端口" }'
+
+  if command -v iptables >/dev/null 2>&1; then
+    echo "[check] iptables INPUT 命中计数（VMess 端口）:"
+    iptables -L INPUT -n -v 2>/dev/null | awk -v p64="${VMESS_PORT_64}" -v p48="${VMESS_PORT_48}" '
+      /dpt:/ && ($0 ~ ("dpt:" p64) || $0 ~ ("dpt:" p48)) { print "  " $0; found=1 }
+      END { if (!found) print "  未找到 VMess 端口对应 INPUT 规则，请检查防火墙" }'
+  else
+    echo "[check] 未找到 iptables，跳过 INPUT 命中计数检查"
+  fi
+
+  echo "[check] 代理出口探测（api64.ipify.org）:"
+  local out64 out48
+  out64="$(curl -6 -sf --connect-timeout 6 --max-time 15 --proxy http://127.0.0.1:33300 https://api64.ipify.org 2>/dev/null || true)"
+  out48="$(curl -6 -sf --connect-timeout 6 --max-time 15 --proxy http://127.0.0.1:33301 https://api64.ipify.org 2>/dev/null || true)"
+  [[ -n "$out64" ]] && echo "  33300 => $out64" || echo "  33300 => 失败"
+  [[ -n "$out48" ]] && echo "  33301 => $out48" || echo "  33301 => 失败"
+  if [[ -n "$out64" && -n "$out48" ]]; then
+    if [[ "$out64" != "$out48" ]]; then
+      echo "[check] 结果：两路代理返回不同 IPv6，随机出口工作正常"
+    else
+      echo "[check] 结果：两路代理返回相同 IPv6（不一定异常，可多试几次确认随机性）"
+    fi
+  fi
 }
 
 # 无 Python 时生成单条 vmess://（紧凑 JSON + base64）
@@ -743,6 +815,7 @@ if [[ "$CONFIG_ONLY" -eq 1 ]]; then
   render_all_configs
   restart_stack
   sleep 2
+  print_post_restart_validation
   run_self_tests
   echo ""
   echo "[install] vmess-links.txt 与 vmess:// 如下:"
@@ -760,6 +833,11 @@ echo "Routed /64: $ROUTED_64_CIDR"
 echo "Routed /48: $ROUTED_48_CIDR"
 echo "主网卡: $PRIMARY_INTERFACE"
 echo "VMess: ${VMESS_PORT_64}(/64) ${VMESS_PORT_48}(/48) path=${VMESS_WS_PATH}"
+if [[ "${BLOCK_IPV4_OUTBOUND:-0}" == "1" ]]; then
+  echo "IPv4 出站限制: 开启（模式 ${IPV4_BLOCK_MODE:-proxy_only}）"
+else
+  echo "IPv4 出站限制: 关闭（默认；如需启用请手动改 config.sh）"
+fi
 echo "=========================================="
 if [[ -t 0 ]] && [[ "${SKIP_CONFIRM:-0}" != "1" ]]; then
   echo ""
@@ -788,6 +866,7 @@ systemctl restart xray 2>/dev/null || true
 ensure_iptables_vmess_inbound
 
 sleep 2
+print_post_restart_validation
 run_self_tests
 write_vmess_links_file
 print_inbound_client_hint

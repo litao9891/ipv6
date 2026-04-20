@@ -80,6 +80,16 @@ restart_all_services() {
   fi
   echo "[onekey] 已执行重启。状态:"
   systemctl is-active ipv6-anyip.service v6-proxy.service v6-proxy-48.service xray.service 2>/dev/null || true
+  echo "[onekey] 重启后强校验:"
+  echo "  [xray监听] 48442/54661"
+  ss -tlnp 2>/dev/null | awk '$1=="LISTEN" && ($4 ~ /:48442$/ || $4 ~ /:54661$/) {print "    " $0; found=1} END{if(!found) print "    未检测到监听"}'
+  if command -v iptables >/dev/null 2>&1; then
+    echo "  [INPUT命中] 48442/54661"
+    iptables -L INPUT -n -v 2>/dev/null | awk '/dpt:/ && ($0 ~ /dpt:48442/ || $0 ~ /dpt:54661/) {print "    " $0; found=1} END{if(!found) print "    未找到对应 INPUT 规则"}'
+  fi
+  echo "  [代理出口] api64.ipify.org"
+  echo "    33300 => $(curl -6 -sf --connect-timeout 6 --max-time 15 --proxy http://127.0.0.1:33300 https://api64.ipify.org 2>/dev/null || echo FAIL)"
+  echo "    33301 => $(curl -6 -sf --connect-timeout 6 --max-time 15 --proxy http://127.0.0.1:33301 https://api64.ipify.org 2>/dev/null || echo FAIL)"
 }
 
 show_menu() {

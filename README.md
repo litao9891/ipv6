@@ -92,6 +92,12 @@ sudo bash install.sh --config-only
 
 - 若隧道异常，可执行：`sudo /usr/local/bin/fix-he-ipv6-tunnel.sh`
 
+## 能 ping 但连不上：首查顺序
+
+1. 先查云安全组/防火墙是否放行 TCP `48442` 与 `54661`。  
+2. 再查客户端是否复制了完整的一整行 `vmess://`（不能断行、不能缺字符）。  
+3. 再确认客户端没有选错其他节点（应选本机当前生成的 `+64` / `+48` 节点）。
+
 ## 文件说明
 
 | 文件 | 说明 |
@@ -115,15 +121,17 @@ sudo bash install.sh --config-only
 
 ## 禁止 IPv4 出站
 
-- 安装 / `--config-only` / `--iptables-only` 会在 **iptables filter OUTPUT**（仅 IPv4）挂接链 **`V6PROXY_OUT4`**：默认 **REJECT** 访问公网 IPv4，**放行** `lo`、`127.0.0.0/8`、**HE `HE_SERVER_IP`**、**proto 41（6in4）**、**169.254.169.254**（部分云元数据）、**已建立连接**。  
-- **v6-proxy / Xray 走 IPv6** 不受影响。  
-- 需要临时放行 IPv4 出站：在 `config.sh` 设 **`BLOCK_IPV4_OUTBOUND=0`** 后执行 `sudo bash install.sh --config-only` 或 `sudo iptables -D OUTPUT -j V6PROXY_OUT4` 并自行维护规则。  
+- 默认不启用 IPv4 出站封锁：`config.sh` 默认 `BLOCK_IPV4_OUTBOUND=0`。  
+- 如需启用，设置 `BLOCK_IPV4_OUTBOUND=1` 后执行 `sudo bash install.sh --config-only`。  
+- 推荐 `IPV4_BLOCK_MODE=proxy_only`：仅匹配代理进程流量（按 Xray `mark=100/101`）并跳转到 `V6PROXY_OUT4`，避免影响系统 DNS/OCSP/系统更新等非代理流量。  
+- `IPV4_BLOCK_MODE=global` 会在全机 `OUTPUT` 挂链，限制范围更大，仅建议明确理解风险后使用。  
+- `V6PROXY_OUT4` 仍会放行 `lo`、`127.0.0.0/8`、`HE_SERVER_IP`、`proto 41`、`169.254.169.254`、已建立连接。  
 - **`public_ip_for_vmess`** 不再使用 **`curl -4`**；优先 **`HE_CLIENT_IPV4_PUBLIC`**，否则取 **`ip -4` 全局地址** 写入 VMess 展示字段。
 
 ## VMess UUID 与客户端连不上
 
 - **`install.sh` / `install.sh --config-only`**：若 `config.sh` 里 **`VMESS_UUID` 为空** 或为仓库**占位 UUID**（`00000000-0000-4000-8000-000000000001`），会按顺序尝试 **`uuidgen`** → **`/proc/sys/kernel/random/uuid`（Linux）** → **`openssl`** → **`python3`** 生成随机 UUID，写回 `config.sh` 并同步到 Xray；**不强制依赖 Python**。  
-- **自检通过但外网客户端连不上**：除 **云安全组** 外，部分 VPS **本机 iptables** 在 INPUT 末尾 **REJECT** 未放行 VMess 端口，SYN 会被拦。`install.sh` / `install.sh --config-only` / 菜单 **3 重启** 会自动在 REJECT/DROP 前插入 **`ACCEPT tcp dpt:端口`**（若尚无），并尝试 **`netfilter-persistent save`** 或写入 **`/etc/iptables/rules.v4`**。仅补防火墙可执行：`sudo bash install.sh --iptables-only`。
+- **自检通过但外网客户端连不上**：先按“能 ping 但连不上：首查顺序”排查；另外部分 VPS **本机 iptables** 在 INPUT 末尾 **REJECT** 未放行 VMess 端口，SYN 会被拦。`install.sh` / `install.sh --config-only` / 菜单 **3 重启** 会自动在 REJECT/DROP 前插入 **`ACCEPT tcp dpt:端口`**（若尚无），并尝试 **`netfilter-persistent save`** 或写入 **`/etc/iptables/rules.v4`**。仅补防火墙可执行：`sudo bash install.sh --iptables-only`。  
 - **`vmess://` 整行必须一行复制**：终端换行会截断 Base64，导致 UUID 不完整、客户端超时；请从 **`vmess-links.txt`** 用编辑器复制，或放大终端宽度后再复制终端输出。
 
 ## 安全提示
